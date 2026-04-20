@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="disc" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#1a1a1a"/>
+      <stop offset="100%" stop-color="#000"/>
+    </radialGradient>
+  </defs>
+  <!-- vinyl body -->
+  <circle cx="32" cy="32" r="30" fill="url(#disc)"/>
+  <!-- grooves -->
+  <circle cx="32" cy="32" r="27" fill="none" stroke="#2a2a2a" stroke-width="0.5"/>
+  <circle cx="32" cy="32" r="24" fill="none" stroke="#2a2a2a" stroke-width="0.5"/>
+  <circle cx="32" cy="32" r="21" fill="none" stroke="#2a2a2a" stroke-width="0.5"/>
+  <circle cx="32" cy="32" r="18" fill="none" stroke="#2a2a2a" stroke-width="0.5"/>
+  <circle cx="32" cy="32" r="15" fill="none" stroke="#2a2a2a" stroke-width="0.5"/>
+  <!-- emerald label -->
+  <circle cx="32" cy="32" r="11" fill="#10b981"/>
+  <circle cx="32" cy="32" r="11" fill="none" stroke="#065f46" stroke-width="0.8"/>
+  <!-- center hole -->
+  <circle cx="32" cy="32" r="1.8" fill="#000"/>
+  <!-- highlight -->
+  <circle cx="22" cy="22" r="8" fill="#fff" opacity="0.04"/>
+</svg>
