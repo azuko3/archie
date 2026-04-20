@@ -11,7 +11,6 @@ import {
   ExternalLink,
   Loader2,
   Disc3,
-  Headphones,
   Library,
   ChevronDown,
   X,
