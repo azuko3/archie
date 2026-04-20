@@ -480,7 +480,7 @@ export default function AadamJacobsArchiveExplorer() {
                 <Disc3 className="h-3.5 w-3.5" />
                 Aadam Jacobs Collection Explorer
               </div>
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">A real browsing experience for a deep live archive</h1>
+              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Archie — a deep live archive</h1>
               <p className="text-xs text-zinc-600">
                 Catalog last updated: {new Date(catalogData.updatedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}
                 {" · "}{catalogData.total.toLocaleString()} total items
