@@ -1293,7 +1293,7 @@ function AlbumCover() {
   return (
     <div className="aspect-square overflow-hidden rounded-3xl border border-zinc-800 bg-black">
       <img
-        src="/album-cover.jpg"
+        src="/album-cover.png"
         alt="Aadam Jacobs Collection cover"
         className="h-full w-full object-cover"
         onError={() => setFailed(true)}
