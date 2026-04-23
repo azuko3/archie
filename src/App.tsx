@@ -1146,12 +1146,6 @@ function AlbumDetail({
     if (result === "copied") onToast("Link copied");
     else if (result === "error") onToast("Couldn't share");
   }
-
-  async function handleShareTrack(file: MetadataFile) {
-    const result = await shareLink(buildAudioUrl(album.identifier, file.name));
-    if (result === "copied") onToast("Track link copied");
-    else if (result === "error") onToast("Couldn't share");
-  }
   return (
     <div className="space-y-5">
       <button
@@ -1164,9 +1158,8 @@ function AlbumDetail({
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
         {/* Left: cover + metadata */}
         <div className="space-y-4">
-          <div className="flex aspect-square items-center justify-center rounded-3xl border border-zinc-800 bg-gradient-to-br from-emerald-500/15 via-zinc-900 to-black">
-            <Disc3 className="h-24 w-24 text-emerald-400/80" />
-          </div>
+          <AlbumCover />
+
           <div className="space-y-1">
             <div className="flex items-center justify-between gap-2">
               <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Live recording</div>
@@ -1275,14 +1268,6 @@ function AlbumDetail({
                           </div>
                         </div>
                       </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleShareTrack(file); }}
-                        className="shrink-0 rounded-full p-1.5 text-zinc-500 opacity-0 transition-all hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100 focus:opacity-100"
-                        title="Share track"
-                        aria-label="Share track"
-                      >
-                        <Share2 className="h-3.5 w-3.5" />
-                      </button>
                     </div>
                   );
                 })}
@@ -1291,6 +1276,28 @@ function AlbumDetail({
           </CardContent>
         </Card>
       </div>
+    </div>
+  );
+}
+
+// ─── Album cover ──────────────────────────────────────────────────────────────
+function AlbumCover() {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div className="flex aspect-square items-center justify-center overflow-hidden rounded-3xl border border-zinc-800 bg-gradient-to-br from-emerald-500/15 via-zinc-900 to-black">
+        <Disc3 className="h-24 w-24 text-emerald-400/80" />
+      </div>
+    );
+  }
+  return (
+    <div className="aspect-square overflow-hidden rounded-3xl border border-zinc-800 bg-black">
+      <img
+        src="/album-cover.jpg"
+        alt="Aadam Jacobs Collection cover"
+        className="h-full w-full object-cover"
+        onError={() => setFailed(true)}
+      />
     </div>
   );
 }
