@@ -19,6 +19,7 @@ import {
   Check,
   LayoutGrid,
   List as ListIcon,
+  Plus,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -108,6 +109,115 @@ function yearToDecade(year: string) {
 
 function buildAudioUrl(identifier: string, fileName: string) {
   return `https://archive.org/download/${identifier}/${encodeURIComponent(fileName)}`;
+}
+
+// ─── Description parsing ──────────────────────────────────────────────────────
+function decodeEntities(s: string) {
+  return s
+    .replace(/&gt;/g, ">")
+    .replace(/&lt;/g, "<")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+type DescBlock =
+  | { kind: "intro"; text: string }
+  | { kind: "credits"; entries: { label: string; value: string }[] }
+  | { kind: "lineage"; label: string; chain: string[] }
+  | { kind: "setlist"; items: { n?: string; text: string }[] }
+  | { kind: "footer"; text: string };
+
+const CREDIT_MARKERS = ["Recorded By", "Transferred By", "Mastered By", "Recorded by", "Transferred by", "Mastered by", "Transfer by", "Transfer", "Transferred", "Mastering"];
+const LINEAGE_MARKERS = ["Source", "Transfer", "Lineage", "Mastering"];
+const MARKER_RE = new RegExp(`\\s(?=(${[...CREDIT_MARKERS, ...LINEAGE_MARKERS, "Setlist", "Recording \\d"].join("|")})[: ])`, "g");
+
+function parseDescription(raw: string): DescBlock[] {
+  const text = decodeEntities(raw);
+  if (!text) return [];
+
+  // Split by known markers — each chunk starts with a marker (except the first)
+  const parts = text.split(MARKER_RE).filter((p) => p && p.trim());
+
+  const blocks: DescBlock[] = [];
+  const creditEntries: { label: string; value: string }[] = [];
+
+  parts.forEach((part, idx) => {
+    const chunk = part.trim();
+
+    // Setlist
+    if (/^Setlist\s*[:\-]/i.test(chunk)) {
+      const body = chunk.replace(/^Setlist\s*[:\-]\s*/i, "");
+      const items = splitSetlist(body);
+      blocks.push({ kind: "setlist", items });
+      return;
+    }
+
+    // Lineage (Source / Transfer / Lineage / Mastering) — has `>` chain
+    const lineageMatch = chunk.match(/^(Source|Transfer|Lineage|Mastering)\s*[:\-]\s*(.+)$/i);
+    if (lineageMatch && lineageMatch[2].includes(">")) {
+      blocks.push({
+        kind: "lineage",
+        label: lineageMatch[1],
+        chain: lineageMatch[2].split(">").map((s) => s.trim()).filter(Boolean),
+      });
+      return;
+    }
+
+    // Credit line (Recorded By: X, Transferred By: Y)
+    const creditMatch = chunk.match(/^(Recorded By|Transferred By|Mastered By|Recorded by|Transferred by|Mastered by|Transfer by)\s*[:\-]?\s*(.+)$/i);
+    if (creditMatch) {
+      creditEntries.push({ label: creditMatch[1], value: creditMatch[2].trim() });
+      return;
+    }
+
+    // Recording / Collection footer
+    if (/^Recording\s+\d/.test(chunk)) {
+      blocks.push({ kind: "footer", text: chunk });
+      return;
+    }
+
+    // Intro (first chunk)
+    if (idx === 0) {
+      blocks.push({ kind: "intro", text: chunk });
+      return;
+    }
+
+    // Unknown → treat as footer text
+    blocks.push({ kind: "footer", text: chunk });
+  });
+
+  if (creditEntries.length > 0) {
+    // Insert credits block after intro (or at top)
+    const introIdx = blocks.findIndex((b) => b.kind === "intro");
+    const insertAt = introIdx >= 0 ? introIdx + 1 : 0;
+    blocks.splice(insertAt, 0, { kind: "credits", entries: creditEntries });
+  }
+
+  return blocks;
+}
+
+function splitSetlist(body: string): { n?: string; text: string }[] {
+  // Match numbered items like "01:", "1.", "01)", "1)"
+  const items: { n?: string; text: string }[] = [];
+  const re = /(\d{1,2})\s*[:.)]\s*/g;
+  let match: RegExpExecArray | null;
+  const positions: { n: string; idx: number }[] = [];
+  while ((match = re.exec(body)) !== null) {
+    positions.push({ n: match[1], idx: match.index + match[0].length });
+  }
+  if (positions.length === 0) {
+    return body.split(/\s{2,}|,\s+/).filter(Boolean).map((t) => ({ text: t.trim() }));
+  }
+  positions.forEach((pos, i) => {
+    const end = i + 1 < positions.length ? positions[i + 1].idx - positions[i + 1].n.length - 2 : body.length;
+    const text = body.slice(pos.idx, end).trim().replace(/[;,.]+$/, "");
+    if (text) items.push({ n: pos.n, text });
+  });
+  return items;
 }
 
 function isPlayable(file: MetadataFile) {
@@ -844,12 +954,7 @@ function AlbumDetail({
             <InfoBox label="Venue" value={normalizeVenue(album)} className="col-span-2" />
           </div>
 
-          {description && (
-            <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-3">
-              <div className="mb-1.5 text-xs uppercase tracking-[0.2em] text-zinc-500">Description</div>
-              <p className="whitespace-pre-wrap text-xs leading-6 text-zinc-300">{description}</p>
-            </div>
-          )}
+          {description && <DescriptionCard description={description} />}
 
           <a href={`https://archive.org/details/${album.identifier}`} target="_blank" rel="noreferrer" className="block">
             <Button className="w-full rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 text-sm">
@@ -928,6 +1033,135 @@ function AlbumDetail({
       </div>
     </div>
   );
+}
+
+// ─── Description card (preview + expand) ─────────────────────────────────────
+function DescriptionCard({ description }: { description: string }) {
+  const [open, setOpen] = useState(false);
+  const preview = useMemo(() => {
+    const decoded = decodeEntities(description);
+    return decoded.length > 220 ? decoded.slice(0, 220).trimEnd() + "…" : decoded;
+  }, [description]);
+
+  return (
+    <>
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-3">
+        <div className="mb-1.5 flex items-center justify-between">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Description</div>
+          <button
+            onClick={() => setOpen(true)}
+            className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-700 text-zinc-400 transition-colors hover:border-emerald-500 hover:text-emerald-400"
+            title="Expand description"
+            aria-label="Expand description"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <p className="text-xs leading-6 text-zinc-300">{preview}</p>
+      </div>
+      {open && <DescriptionModal description={description} onClose={() => setOpen(false)} />}
+    </>
+  );
+}
+
+function DescriptionModal({ description, onClose }: { description: string; onClose: () => void }) {
+  const blocks = useMemo(() => parseDescription(description), [description]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-950 shadow-2xl"
+      >
+        <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-4">
+          <div className="text-sm font-medium text-zinc-100">Description</div>
+          <button
+            onClick={onClose}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-100"
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="max-h-[calc(85vh-57px)] space-y-4 overflow-y-auto px-5 py-5 text-sm text-zinc-200">
+          {blocks.map((block, i) => (
+            <DescBlockView key={i} block={block} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DescBlockView({ block }: { block: DescBlock }) {
+  if (block.kind === "intro") {
+    return <p className="text-base leading-7 text-zinc-100">{block.text}</p>;
+  }
+  if (block.kind === "credits") {
+    return (
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
+        <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-zinc-500">Credits</div>
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+          {block.entries.map((e, i) => (
+            <div key={i} className="flex items-baseline gap-2 text-xs">
+              <span className="w-28 shrink-0 text-zinc-500">{e.label}</span>
+              <span className="text-zinc-200">{e.value}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (block.kind === "lineage") {
+    return (
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
+        <div className="mb-2 text-[10px] uppercase tracking-[0.2em] text-zinc-500">{block.label}</div>
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          {block.chain.map((step, i) => (
+            <React.Fragment key={i}>
+              <span className="rounded-md border border-zinc-700 bg-zinc-950/80 px-2 py-1 text-zinc-200">{step}</span>
+              {i < block.chain.length - 1 && <span className="text-emerald-500">→</span>}
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (block.kind === "setlist") {
+    return (
+      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
+        <div className="mb-3 flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+          <span>Setlist</span>
+          <span className="text-zinc-600">· {block.items.length} songs</span>
+        </div>
+        <ol className="space-y-1 text-sm">
+          {block.items.map((item, i) => (
+            <li key={i} className="flex items-baseline gap-3">
+              <span className="w-6 shrink-0 text-right text-xs tabular-nums text-zinc-500">{item.n || String(i + 1).padStart(2, "0")}</span>
+              <span className="text-zinc-100">{item.text}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    );
+  }
+  // footer
+  return <p className="text-xs leading-6 text-zinc-500">{block.text}</p>;
 }
 
 function StatCard({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
