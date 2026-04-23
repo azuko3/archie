@@ -151,14 +151,16 @@ function useFavorites() {
 }
 
 // ─── Share ────────────────────────────────────────────────────────────────────
-async function shareLink({ title, text, url }: { title: string; text?: string; url: string }): Promise<"shared" | "copied" | "error"> {
+// Only pass { url } — sending title/text causes many messaging apps
+// (WhatsApp, Slack, Telegram) to concatenate everything into the shared message.
+async function shareLink(url: string): Promise<"shared" | "copied" | "error"> {
   try {
     if (typeof navigator !== "undefined" && navigator.share) {
-      await navigator.share({ title, text, url });
+      await navigator.share({ url });
       return "shared";
     }
   } catch {
-    // user cancelled or failed — fall through to copy
+    // user cancelled or share failed — fall through to clipboard copy
   }
   try {
     await navigator.clipboard.writeText(url);
@@ -1140,21 +1142,13 @@ function AlbumDetail({
   onToggleFavorite: () => void;
 }) {
   async function handleShareAlbum() {
-    const result = await shareLink({
-      title: album.title || album.identifier,
-      text: `${normalizeCreator(album.creator)} — live recording`,
-      url: buildAlbumUrl(album.identifier),
-    });
+    const result = await shareLink(buildAlbumUrl(album.identifier));
     if (result === "copied") onToast("Link copied");
     else if (result === "error") onToast("Couldn't share");
   }
 
   async function handleShareTrack(file: MetadataFile) {
-    const result = await shareLink({
-      title: file.title || file.name,
-      text: `${normalizeCreator(album.creator)} — ${album.title || ""}`,
-      url: buildAudioUrl(album.identifier, file.name),
-    });
+    const result = await shareLink(buildAudioUrl(album.identifier, file.name));
     if (result === "copied") onToast("Track link copied");
     else if (result === "error") onToast("Couldn't share");
   }
@@ -1259,6 +1253,7 @@ function AlbumDetail({
                         isCurrent ? "bg-emerald-500/10" : ""
                       }`}
                     >
+                      <div className="w-6 shrink-0 text-right text-xs tabular-nums text-zinc-600">{String(idx + 1).padStart(2, "0")}</div>
                       <button
                         onClick={() => onPlayTrack(idx)}
                         className="flex min-w-0 flex-1 items-center gap-3 text-left"
@@ -1280,17 +1275,14 @@ function AlbumDetail({
                           </div>
                         </div>
                       </button>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleShareTrack(file); }}
-                          className="rounded-full p-1.5 text-zinc-500 opacity-0 transition-all hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100 focus:opacity-100"
-                          title="Share track"
-                          aria-label="Share track"
-                        >
-                          <Share2 className="h-3.5 w-3.5" />
-                        </button>
-                        <div className="w-6 text-right text-xs text-zinc-600">{String(idx + 1).padStart(2, "0")}</div>
-                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleShareTrack(file); }}
+                        className="shrink-0 rounded-full p-1.5 text-zinc-500 opacity-0 transition-all hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100 focus:opacity-100"
+                        title="Share track"
+                        aria-label="Share track"
+                      >
+                        <Share2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   );
                 })}
