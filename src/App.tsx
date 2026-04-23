@@ -20,6 +20,9 @@ import {
   LayoutGrid,
   List as ListIcon,
   Plus,
+  Share2,
+  ListMusic,
+  Star,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -109,6 +112,60 @@ function yearToDecade(year: string) {
 
 function buildAudioUrl(identifier: string, fileName: string) {
   return `https://archive.org/download/${identifier}/${encodeURIComponent(fileName)}`;
+}
+
+function buildAlbumUrl(identifier: string) {
+  return `https://archive.org/details/${identifier}`;
+}
+
+// ─── Favorites (localStorage) ─────────────────────────────────────────────────
+const FAVORITES_KEY = "archie:favorites:v1";
+
+function loadFavorites(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FAVORITES_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveFavorites(favs: Set<string>) {
+  try { localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favs])); } catch { /* ignore */ }
+}
+
+function useFavorites() {
+  const [favorites, setFavorites] = useState<Set<string>>(() => loadFavorites());
+  const toggle = (id: string) => {
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      saveFavorites(next);
+      return next;
+    });
+  };
+  const isFavorite = (id: string) => favorites.has(id);
+  return { favorites, toggle, isFavorite };
+}
+
+// ─── Share ────────────────────────────────────────────────────────────────────
+async function shareLink({ title, text, url }: { title: string; text?: string; url: string }): Promise<"shared" | "copied" | "error"> {
+  try {
+    if (typeof navigator !== "undefined" && navigator.share) {
+      await navigator.share({ title, text, url });
+      return "shared";
+    }
+  } catch {
+    // user cancelled or failed — fall through to copy
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    return "copied";
+  } catch {
+    return "error";
+  }
 }
 
 // ─── Description parsing ──────────────────────────────────────────────────────
@@ -430,7 +487,10 @@ export default function AadamJacobsArchiveExplorer() {
   const [venue, setVenue] = useState("all");
   const [sortBy, setSortBy] = useState<SortValue>("date-desc");
   const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [onlyFavorites, setOnlyFavorites] = useState(false);
   const [page, setPage] = useState(1);
+
+  const { favorites, toggle: toggleFavorite, isFavorite } = useFavorites();
 
   // Navigation / album detail
   const [selected, setSelected] = useState<ArchiveItem | null>(null);
@@ -444,7 +504,7 @@ export default function AadamJacobsArchiveExplorer() {
   const [isPlaying, setIsPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  useEffect(() => { setPage(1); }, [query, decade, artist, venue, sortBy]);
+  useEffect(() => { setPage(1); }, [query, decade, artist, venue, sortBy, onlyFavorites]);
 
   // Load metadata for the selected album (detail view)
   useEffect(() => {
@@ -513,7 +573,8 @@ export default function AadamJacobsArchiveExplorer() {
         (!q || buildHaystack(item).includes(q)) &&
         (decade === "all" || yearToDecade(itemYear) === decade) &&
         (artist === "all" || normalizeCreator(item.creator) === artist) &&
-        (venue === "all" || normalizeVenue(item) === venue)
+        (venue === "all" || normalizeVenue(item) === venue) &&
+        (!onlyFavorites || favorites.has(item.identifier))
       );
     });
     next.sort((a, b) => {
@@ -525,7 +586,7 @@ export default function AadamJacobsArchiveExplorer() {
       return (b.publicdate || "").localeCompare(a.publicdate || "");
     });
     return next;
-  }, [query, decade, artist, venue, sortBy]);
+  }, [query, decade, artist, venue, sortBy, onlyFavorites, favorites]);
 
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / PAGE_SIZE));
   const pagedItems = filteredItems.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -570,12 +631,41 @@ export default function AadamJacobsArchiveExplorer() {
     if (currentTrackIdx < 0 || !currentAlbum) return;
     const file = currentFiles[currentTrackIdx];
     if (!file) return;
+
     audio.src = buildAudioUrl(currentAlbum.identifier, file.name);
-    audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+    audio.load(); // iOS range-request fix
+    audio
+      .play()
+      .then(() => setIsPlaying(true))
+      .catch((err) => {
+        console.warn("[player] play failed", err);
+        setIsPlaying(false);
+      });
+
+    // Media session (OS-level media controls on iOS/Android/macOS)
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: file.title || file.name,
+        artist: normalizeCreator(currentAlbum.creator),
+        album: currentAlbum.title || currentAlbum.identifier,
+      });
+      navigator.mediaSession.setActionHandler("play", () => audio.play());
+      navigator.mediaSession.setActionHandler("pause", () => audio.pause());
+      navigator.mediaSession.setActionHandler("previoustrack", () => skipTrack(-1));
+      navigator.mediaSession.setActionHandler("nexttrack", () => skipTrack(1));
+    }
   }, [currentTrackIdx, currentAlbum, currentFiles]);
 
   const currentTrack = currentTrackIdx >= 0 ? currentFiles[currentTrackIdx] : null;
   const hasPlayer = !!currentTrack && !!currentAlbum;
+
+  // Toast feedback (share copy, etc.)
+  const [toast, setToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   // ── Render ──
   return (
@@ -625,6 +715,21 @@ export default function AadamJacobsArchiveExplorer() {
 
                 <ComboboxFilter label="Artist" value={artist} onChange={setArtist} options={availableArtists} icon={<User className="h-3.5 w-3.5" />} />
                 <ComboboxFilter label="Venue" value={venue} onChange={setVenue} options={availableVenues} icon={<MapPin className="h-3.5 w-3.5" />} />
+                <button
+                  onClick={() => setOnlyFavorites((v) => !v)}
+                  className={`inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-sm transition-colors ${
+                    onlyFavorites
+                      ? "border-amber-400 bg-amber-400/15 text-amber-200"
+                      : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+                  }`}
+                  title={onlyFavorites ? "Show all" : "Show only favorites"}
+                >
+                  <Star className={`h-3.5 w-3.5 ${onlyFavorites ? "fill-amber-300 text-amber-300" : ""}`} />
+                  Favorites
+                  {favorites.size > 0 && (
+                    <span className="text-xs opacity-60">{favorites.size}</span>
+                  )}
+                </button>
                 <SortSelector value={sortBy} onChange={setSortBy} />
                 <ViewToggle value={viewMode} onChange={setViewMode} />
 
@@ -677,6 +782,9 @@ export default function AadamJacobsArchiveExplorer() {
             currentAlbumId={currentAlbum?.identifier}
             onBack={() => setSelected(null)}
             onPlayTrack={(idx) => playTrack(selected, files, idx)}
+            onToast={setToast}
+            isFavorite={isFavorite(selected.identifier)}
+            onToggleFavorite={() => toggleFavorite(selected.identifier)}
           />
         ) : (
           <CatalogView
@@ -693,6 +801,9 @@ export default function AadamJacobsArchiveExplorer() {
             onResetAll={resetAll}
             onPrev={() => setPage((p) => Math.max(1, p - 1))}
             onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+            isFavorite={isFavorite}
+            onToggleFavorite={toggleFavorite}
+            onlyFavorites={onlyFavorites}
           />
         )}
       </div>
@@ -703,9 +814,14 @@ export default function AadamJacobsArchiveExplorer() {
           <div className="mx-auto flex max-w-7xl items-center gap-4 px-4 py-3 sm:px-6 lg:px-8">
             {/* Now playing */}
             <div className="flex min-w-0 flex-1 items-center gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400">
-                <Disc3 className="h-5 w-5" />
-              </div>
+              <button
+                onClick={() => setSelected(currentAlbum)}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 transition-colors hover:bg-emerald-500/25"
+                title="Open tracklist"
+                aria-label="Open tracklist"
+              >
+                <ListMusic className="h-5 w-5" />
+              </button>
               <div className="min-w-0">
                 <div className="line-clamp-1 text-sm text-zinc-100">{currentTrack.title || currentTrack.name}</div>
                 <div className="line-clamp-1 text-xs text-zinc-500">
@@ -755,11 +871,38 @@ export default function AadamJacobsArchiveExplorer() {
                 if (currentTrackIdx < currentFiles.length - 1) skipTrack(1);
                 else setIsPlaying(false);
               }}
+              onError={(e) => {
+                const el = e.currentTarget;
+                console.warn("[player] audio error", {
+                  code: el.error?.code,
+                  message: el.error?.message,
+                  src: el.currentSrc,
+                  trackIdx: currentTrackIdx,
+                });
+                // Auto-skip broken tracks; stop if it's the last one
+                if (currentTrackIdx < currentFiles.length - 1) {
+                  setTimeout(() => skipTrack(1), 400);
+                } else {
+                  setIsPlaying(false);
+                }
+              }}
+              onStalled={() => console.debug("[player] stalled", { trackIdx: currentTrackIdx })}
               controls
               className="hidden min-w-0 flex-1 sm:block"
               style={{ maxWidth: 360 }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div
+          className="pointer-events-none fixed left-1/2 z-50 -translate-x-1/2 rounded-full border border-zinc-700 bg-zinc-900/95 px-4 py-2 text-sm text-zinc-100 shadow-lg backdrop-blur"
+          style={{ bottom: hasPlayer ? 96 : 24 }}
+          role="status"
+        >
+          {toast}
         </div>
       )}
     </div>
@@ -771,6 +914,7 @@ function CatalogView({
   query, artist, venue, decade, viewMode,
   pagedItems, filteredTotal, page, totalPages,
   onSelect, onResetAll, onPrev, onNext,
+  isFavorite, onToggleFavorite, onlyFavorites,
 }: {
   query: string;
   artist: string;
@@ -785,6 +929,9 @@ function CatalogView({
   onResetAll: () => void;
   onPrev: () => void;
   onNext: () => void;
+  isFavorite: (id: string) => boolean;
+  onToggleFavorite: (id: string) => void;
+  onlyFavorites: boolean;
 }) {
   return (
     <div className="space-y-4">
@@ -798,12 +945,16 @@ function CatalogView({
       {pagedItems.length === 0 ? (
         <Card className="border-zinc-800 bg-zinc-900">
           <CardContent className="flex flex-col items-center gap-4 p-10 text-center">
-            <div className="text-3xl">🎵</div>
+            <div className="text-3xl">{onlyFavorites ? "⭐" : "🎵"}</div>
             <div>
-              <div className="text-sm font-medium text-zinc-300">No recordings match these filters</div>
+              <div className="text-sm font-medium text-zinc-300">
+                {onlyFavorites ? "No favorites yet" : "No recordings match these filters"}
+              </div>
               <div className="mt-1 text-xs text-zinc-500">
-                Try removing one of the active filters, or{" "}
-                <button onClick={onResetAll} className="text-emerald-400 underline-offset-2 hover:underline">clear all filters</button>
+                {onlyFavorites
+                  ? "Click the star on any recording to save it here."
+                  : <>Try removing one of the active filters, or <button onClick={onResetAll} className="text-emerald-400 underline-offset-2 hover:underline">clear all filters</button></>
+                }
               </div>
             </div>
             {(artist !== "all" || venue !== "all" || decade !== "all" || query) && (
@@ -819,12 +970,20 @@ function CatalogView({
       ) : viewMode === "grid" ? (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {pagedItems.map((item) => (
-            <CatalogCard key={item.identifier} item={item} query={query} onClick={() => onSelect(item)} />
+            <CatalogCard
+              key={item.identifier}
+              item={item}
+              query={query}
+              onClick={() => onSelect(item)}
+              favorite={isFavorite(item.identifier)}
+              onToggleFavorite={() => onToggleFavorite(item.identifier)}
+            />
           ))}
         </div>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-zinc-800">
           <div className="hidden items-center gap-3 border-b border-zinc-800 bg-zinc-900/60 px-4 py-2 text-[11px] uppercase tracking-wider text-zinc-500 sm:flex">
+            <div className="w-8 shrink-0"></div>
             <div className="w-12 shrink-0">Year</div>
             <div className="flex-1 min-w-0">Title</div>
             <div className="w-40 shrink-0">Artist</div>
@@ -833,7 +992,14 @@ function CatalogView({
           </div>
           <div className="divide-y divide-zinc-800">
             {pagedItems.map((item) => (
-              <CatalogRow key={item.identifier} item={item} query={query} onClick={() => onSelect(item)} />
+              <CatalogRow
+                key={item.identifier}
+                item={item}
+                query={query}
+                onClick={() => onSelect(item)}
+                favorite={isFavorite(item.identifier)}
+                onToggleFavorite={() => onToggleFavorite(item.identifier)}
+              />
             ))}
           </div>
         </div>
@@ -851,59 +1017,99 @@ function CatalogView({
   );
 }
 
-function CatalogCard({ item, query, onClick }: { item: ArchiveItem; query: string; onClick: () => void }) {
+function CatalogCard({
+  item, query, onClick, favorite, onToggleFavorite,
+}: {
+  item: ArchiveItem;
+  query: string;
+  onClick: () => void;
+  favorite: boolean;
+  onToggleFavorite: () => void;
+}) {
   const matchLabels: Record<NonNullable<MatchField>, string> = { title: "title", artist: "artist", venue: "venue", date: "date", other: "notes" };
   const f = query ? getMatchField(item, query.trim()) : null;
   return (
-    <button onClick={onClick} className="text-left transition-transform hover:-translate-y-0.5">
-      <Card className="h-full rounded-3xl border border-zinc-800 bg-zinc-900/80 transition-colors hover:border-zinc-700">
-        <CardHeader className="space-y-3 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <Badge variant="secondary" className="rounded-full border border-zinc-700 bg-zinc-950 text-zinc-300 font-normal">
-              {extractYear(item)}
-            </Badge>
-            <div className="flex items-center gap-2">
-              {f && (
-                <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-500">{matchLabels[f]}</span>
-              )}
-              {typeof item.downloads === "number" && (
-                <span className="text-xs text-zinc-500">{item.downloads.toLocaleString()} ↓</span>
-              )}
+    <div className="relative">
+      <button onClick={onClick} className="block w-full text-left transition-transform hover:-translate-y-0.5">
+        <Card className="h-full rounded-3xl border border-zinc-800 bg-zinc-900/80 transition-colors hover:border-zinc-700">
+          <CardHeader className="space-y-3 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <Badge variant="secondary" className="rounded-full border border-zinc-700 bg-zinc-950 text-zinc-300 font-normal">
+                {extractYear(item)}
+              </Badge>
+              <div className="flex items-center gap-2 pr-7">
+                {f && (
+                  <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-500">{matchLabels[f]}</span>
+                )}
+                {typeof item.downloads === "number" && (
+                  <span className="text-xs text-zinc-500">{item.downloads.toLocaleString()} ↓</span>
+                )}
+              </div>
             </div>
-          </div>
-          <CardTitle className="line-clamp-2 text-sm leading-5 text-zinc-50">{item.title || item.identifier}</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 px-4 pb-4 pt-0 text-xs text-zinc-500">
-          <div className="flex items-center gap-1.5"><User className="h-3.5 w-3.5 shrink-0" /><span className="line-clamp-1">{normalizeCreator(item.creator)}</span></div>
-          <div className="flex items-center gap-1.5"><Calendar className="h-3.5 w-3.5 shrink-0" /><span>{formatDate(item.date || item.publicdate)}</span></div>
-          <div className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="line-clamp-1">{normalizeVenue(item)}</span></div>
-        </CardContent>
-      </Card>
-    </button>
+            <CardTitle className="line-clamp-2 text-sm leading-5 text-zinc-50">{item.title || item.identifier}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 px-4 pb-4 pt-0 text-xs text-zinc-500">
+            <div className="flex items-center gap-1.5"><User className="h-3.5 w-3.5 shrink-0" /><span className="line-clamp-1">{normalizeCreator(item.creator)}</span></div>
+            <div className="flex items-center gap-1.5"><Calendar className="h-3.5 w-3.5 shrink-0" /><span>{formatDate(item.date || item.publicdate)}</span></div>
+            <div className="flex items-center gap-1.5"><MapPin className="h-3.5 w-3.5 shrink-0" /><span className="line-clamp-1">{normalizeVenue(item)}</span></div>
+          </CardContent>
+        </Card>
+      </button>
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
+        className={`absolute right-3 top-3 rounded-full p-1.5 transition-colors ${
+          favorite
+            ? "text-amber-300 hover:bg-amber-400/10"
+            : "text-zinc-600 hover:bg-zinc-800 hover:text-amber-300"
+        }`}
+        title={favorite ? "Remove from favorites" : "Add to favorites"}
+        aria-label={favorite ? "Remove from favorites" : "Add to favorites"}
+        aria-pressed={favorite}
+      >
+        <Star className={`h-4 w-4 ${favorite ? "fill-amber-300" : ""}`} />
+      </button>
+    </div>
   );
 }
 
-function CatalogRow({ item, query, onClick }: { item: ArchiveItem; query: string; onClick: () => void }) {
+function CatalogRow({
+  item, query, onClick, favorite, onToggleFavorite,
+}: {
+  item: ArchiveItem;
+  query: string;
+  onClick: () => void;
+  favorite: boolean;
+  onToggleFavorite: () => void;
+}) {
   const matchLabels: Record<NonNullable<MatchField>, string> = { title: "title", artist: "artist", venue: "venue", date: "date", other: "notes" };
   const f = query ? getMatchField(item, query.trim()) : null;
   return (
-    <button
-      onClick={onClick}
-      className="flex w-full items-center gap-3 bg-zinc-900/40 px-4 py-2.5 text-left text-sm transition-colors hover:bg-zinc-800/60"
-    >
-      <div className="w-12 shrink-0 text-xs text-zinc-500">{extractYear(item)}</div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <div className="line-clamp-1 text-zinc-100">{item.title || item.identifier}</div>
-          {f && (
-            <span className="rounded-full border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-500">{matchLabels[f]}</span>
-          )}
+    <div className="group flex w-full items-center gap-3 bg-zinc-900/40 px-4 py-2.5 text-sm transition-colors hover:bg-zinc-800/60">
+      <button
+        onClick={onToggleFavorite}
+        className={`w-8 shrink-0 rounded-full p-1 transition-colors ${
+          favorite ? "text-amber-300" : "text-zinc-600 hover:text-amber-300"
+        }`}
+        title={favorite ? "Remove from favorites" : "Add to favorites"}
+        aria-pressed={favorite}
+      >
+        <Star className={`h-4 w-4 ${favorite ? "fill-amber-300" : ""}`} />
+      </button>
+      <button onClick={onClick} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+        <div className="w-12 shrink-0 text-xs text-zinc-500">{extractYear(item)}</div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <div className="line-clamp-1 text-zinc-100">{item.title || item.identifier}</div>
+            {f && (
+              <span className="rounded-full border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-500">{matchLabels[f]}</span>
+            )}
+          </div>
         </div>
-      </div>
-      <div className="w-40 shrink-0 truncate text-xs text-zinc-400">{normalizeCreator(item.creator)}</div>
-      <div className="w-40 shrink-0 truncate text-xs text-zinc-500">{normalizeVenue(item)}</div>
-      <div className="w-20 shrink-0 text-right text-xs text-zinc-500">{formatDate(item.date || item.publicdate)}</div>
-    </button>
+        <div className="w-40 shrink-0 truncate text-xs text-zinc-400">{normalizeCreator(item.creator)}</div>
+        <div className="w-40 shrink-0 truncate text-xs text-zinc-500">{normalizeVenue(item)}</div>
+        <div className="w-20 shrink-0 text-right text-xs text-zinc-500">{formatDate(item.date || item.publicdate)}</div>
+      </button>
+    </div>
   );
 }
 
@@ -917,6 +1123,9 @@ function AlbumDetail({
   currentAlbumId,
   onBack,
   onPlayTrack,
+  onToast,
+  isFavorite,
+  onToggleFavorite,
 }: {
   album: ArchiveItem;
   files: MetadataFile[];
@@ -926,7 +1135,29 @@ function AlbumDetail({
   currentAlbumId?: string;
   onBack: () => void;
   onPlayTrack: (idx: number) => void;
+  onToast: (msg: string) => void;
+  isFavorite: boolean;
+  onToggleFavorite: () => void;
 }) {
+  async function handleShareAlbum() {
+    const result = await shareLink({
+      title: album.title || album.identifier,
+      text: `${normalizeCreator(album.creator)} — live recording`,
+      url: buildAlbumUrl(album.identifier),
+    });
+    if (result === "copied") onToast("Link copied");
+    else if (result === "error") onToast("Couldn't share");
+  }
+
+  async function handleShareTrack(file: MetadataFile) {
+    const result = await shareLink({
+      title: file.title || file.name,
+      text: `${normalizeCreator(album.creator)} — ${album.title || ""}`,
+      url: buildAudioUrl(album.identifier, file.name),
+    });
+    if (result === "copied") onToast("Track link copied");
+    else if (result === "error") onToast("Couldn't share");
+  }
   return (
     <div className="space-y-5">
       <button
@@ -943,7 +1174,19 @@ function AlbumDetail({
             <Disc3 className="h-24 w-24 text-emerald-400/80" />
           </div>
           <div className="space-y-1">
-            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Live recording</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Live recording</div>
+              <button
+                onClick={onToggleFavorite}
+                className={`rounded-full p-1.5 transition-colors ${
+                  isFavorite ? "text-amber-300 hover:bg-amber-400/10" : "text-zinc-500 hover:bg-zinc-800 hover:text-amber-300"
+                }`}
+                title={isFavorite ? "Remove from favorites" : "Add to favorites"}
+                aria-pressed={isFavorite}
+              >
+                <Star className={`h-4 w-4 ${isFavorite ? "fill-amber-300" : ""}`} />
+              </button>
+            </div>
             <h2 className="text-2xl font-semibold leading-tight text-zinc-50">{album.title || album.identifier}</h2>
             <div className="text-sm text-zinc-300">{normalizeCreator(album.creator)}</div>
           </div>
@@ -956,12 +1199,23 @@ function AlbumDetail({
 
           {description && <DescriptionCard description={description} />}
 
-          <a href={`https://archive.org/details/${album.identifier}`} target="_blank" rel="noreferrer" className="block">
-            <Button className="w-full rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 text-sm">
-              <ExternalLink className="mr-2 h-4 w-4" />
-              Open on Archive.org
+          <div className="flex gap-2">
+            <a href={`https://archive.org/details/${album.identifier}`} target="_blank" rel="noreferrer" className="flex-1">
+              <Button className="w-full rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 text-sm">
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Open on Archive.org
+              </Button>
+            </a>
+            <Button
+              onClick={handleShareAlbum}
+              variant="outline"
+              className="h-10 w-10 shrink-0 rounded-2xl border-zinc-700 bg-zinc-900 p-0 text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+              title="Share album"
+              aria-label="Share album"
+            >
+              <Share2 className="h-4 w-4" />
             </Button>
-          </a>
+          </div>
         </div>
 
         {/* Right: tracks list — center stage */}
@@ -999,31 +1253,45 @@ function AlbumDetail({
                 {files.map((file, idx) => {
                   const isCurrent = currentAlbumId === album.identifier && currentTrack?.name === file.name;
                   return (
-                    <button
+                    <div
                       key={`${file.name}-${idx}`}
-                      onClick={() => onPlayTrack(idx)}
-                      className={`group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-zinc-800/50 ${
+                      className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 transition-colors hover:bg-zinc-800/50 ${
                         isCurrent ? "bg-emerald-500/10" : ""
                       }`}
                     >
-                      <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
-                        isCurrent
-                          ? "bg-emerald-500 text-zinc-950"
-                          : "bg-zinc-800 text-zinc-400 group-hover:bg-emerald-500/20 group-hover:text-emerald-300"
-                      }`}>
-                        <Play className="h-3.5 w-3.5 translate-x-[1px]" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className={`line-clamp-1 text-sm ${isCurrent ? "text-emerald-300" : "text-zinc-100"}`}>
-                          {file.title || file.name}
+                      <button
+                        onClick={() => onPlayTrack(idx)}
+                        className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                      >
+                        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
+                          isCurrent
+                            ? "bg-emerald-500 text-zinc-950"
+                            : "bg-zinc-800 text-zinc-400 group-hover:bg-emerald-500/20 group-hover:text-emerald-300"
+                        }`}>
+                          <Play className="h-3.5 w-3.5 translate-x-[1px]" />
                         </div>
-                        <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">
-                          {file.format || "Unknown format"}{file.track ? ` · Track ${file.track}` : ""}
-                          {file.length ? ` · ${file.length}` : ""}
+                        <div className="min-w-0 flex-1">
+                          <div className={`line-clamp-1 text-sm ${isCurrent ? "text-emerald-300" : "text-zinc-100"}`}>
+                            {file.title || file.name}
+                          </div>
+                          <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">
+                            {file.format || "Unknown format"}{file.track ? ` · Track ${file.track}` : ""}
+                            {file.length ? ` · ${file.length}` : ""}
+                          </div>
                         </div>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleShareTrack(file); }}
+                          className="rounded-full p-1.5 text-zinc-500 opacity-0 transition-all hover:bg-zinc-800 hover:text-zinc-200 group-hover:opacity-100 focus:opacity-100"
+                          title="Share track"
+                          aria-label="Share track"
+                        >
+                          <Share2 className="h-3.5 w-3.5" />
+                        </button>
+                        <div className="w-6 text-right text-xs text-zinc-600">{String(idx + 1).padStart(2, "0")}</div>
                       </div>
-                      <div className="text-xs text-zinc-600">{String(idx + 1).padStart(2, "0")}</div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
